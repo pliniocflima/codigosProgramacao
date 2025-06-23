@@ -1,0 +1,604 @@
+Function OperacaoBESS(energiaInicial As Double, _
+                      eDisp As String, _
+                      eInj As String, _
+                      eMUST As String, _
+                      cCurt As String, _
+                      sClip As String, _
+                      pConces As String, _
+                      pldH As String, _
+                      pldAT As String, _
+                      capacidadeBESS As Double, _
+                      cRateCarga As Double, _
+                      cRateDescarga As Double, _
+                      eficienciaCarga As Double, _
+                      eficienciaDescarga As Double) As String
+    
+    On Error GoTo TrataErro ' Ativa o tratamento de erro logo no início
+    Dim i As Integer
+    Dim energiaBESS(0 To 24) As Double
+    Dim espacoParaDescarga(1 To 24) As Double
+    Dim carga(1 To 24) As Double
+    Dim cargaCurtailment(1 To 24) As Double
+    Dim cargaClipping(1 To 24) As Double
+    Dim cargaConcessionaria(1 To 24) As Double
+    Dim cargaArbitragem(1 To 24) As Double
+    Dim descarga(1 To 24) As Double
+    Dim descargaInicial(1 To 24) As Double
+    Dim descargaCurtailment(1 To 24) As Double
+    Dim descargaClipping(1 To 24) As Double
+    Dim descargaConcessionaria(1 To 24) As Double
+    Dim descargaArbitragem(1 To 24) As Double
+    Dim energiaDisponível(1 To 24) As Double
+    Dim energiaInjetada(1 To 24) As Double
+    Dim espacoMUST(1 To 24) As Double
+    Dim corteCurtailment(1 To 24) As Double
+    Dim sobraClipping(1 To 24) As Double
+    Dim perdaConcessionaria(1 To 24) As Double
+    Dim pldHoraria(1 To 24) As Double
+    Dim pldAlvoTrade(1 To 24) As Double
+    Dim partes() As String
+    Dim possibilidadeCargaSemImpactoInjecao(1 To 24) As Double
+    Dim cargaSemImpacto(1 To 24) As Double
+    Dim descargaSemImpacto(1 To 24) As Double
+    Dim cargaComImpacto(1 To 24) As Double
+    Dim descargaComImpacto(1 To 24) As Double
+    Dim loopArbitragem As Boolean
+    Dim contadorLoop, limitadorLoop As Integer: limitadorLoop = 1000
+    
+    ' Iniciação das variáveis
+    partes = SplitSeguro(eDisp, ";", 24, "0"): For i = 1 To 24: energiaDisponível(i) = CDblSafe(partes(i - 1)): Next i
+    partes = SplitSeguro(eInj, ";", 24, "0"): For i = 1 To 24: energiaInjetada(i) = CDblSafe(partes(i - 1)): Next i
+    partes = SplitSeguro(eMUST, ";", 24, "0"): For i = 1 To 24: espacoMUST(i) = CDblSafe(partes(i - 1)): Next i
+    partes = SplitSeguro(cCurt, ";", 24, "0"): For i = 1 To 24: corteCurtailment(i) = CDblSafe(partes(i - 1)): Next i
+    partes = SplitSeguro(sClip, ";", 24, "0"): For i = 1 To 24: sobraClipping(i) = CDblSafe(partes(i - 1)): Next i
+    partes = SplitSeguro(pConces, ";", 24, "0"): For i = 1 To 24: perdaConcessionaria(i) = CDblSafe(partes(i - 1)): Next i
+    partes = SplitSeguro(pldH, ";", 24, "0"): For i = 1 To 24: pldHoraria(i) = CDblSafe(partes(i - 1)): Next i
+    partes = SplitSeguro(pldAT, ";", 24, "0"): For i = 1 To 24: pldAlvoTrade(i) = CDblSafe(partes(i - 1)): Next i
+    For i = 0 To 24: energiaBESS(i) = energiaInicial: Next i
+    For i = 1 To 24: espacoParaDescarga(i) = espacoMUST(i): Next i
+    For i = 1 To 24: possibilidadeCargaSemImpactoInjecao(i) = corteCurtailment(i) + sobraClipping(i) + perdaConcessionaria(i): Next i
+    
+    ' === PARA USO NAS ETAPAS SEM AFETAR O CENÁRIO ORIGINAL ===
+    Dim aux_energiaBESS(0 To 24) As Double
+    Dim aux_espacoParaDescarga(1 To 24) As Double
+    Dim aux_energiaInjetada(1 To 24) As Double
+    Dim aux_carga As Double
+    Dim aux_descarga As Double
+    Dim aux_cargaSemImpacto(1 To 24) As Double
+    Dim aux_descargaSemImpacto(1 To 24) As Double
+    Dim aux_cargaComImpacto(1 To 24) As Double
+    Dim aux_descargaComImpacto(1 To 24) As Double
+    Dim j, j_melhor As Integer
+    Dim pld_max As Double
+    Dim horasDisponiveis(1 To 24) As Boolean
+    
+    ' ============================================ ETAPA 0: Descarregamento Inicial =============================================
+    aux_descarga = 0
+    If energiaInicial > 0 Then
+        ' Descarrega o valor de energia inicial o mais cedo possível
+        Call DescargaMaisRapidaPossivel(1, espacoParaDescarga, energiaBESS, energiaInicial, aux_descarga, descargaInicial, capacidadeBESS, cRateDescarga, eficienciaDescarga)
+    End If
+    
+    ' ================================================== ETAPA 1: Curtailment ===================================================
+    ' === RECOMPOSIÇÃO DE VARIÁVEIS ===
+    For i = 0 To 24: aux_energiaBESS(i) = energiaBESS(i): Next i
+    For i = 1 To 24: aux_espacoParaDescarga(i) = espacoParaDescarga(i): Next i
+    For i = 1 To 24: aux_energiaInjetada(i) = energiaInjetada(i): Next i
+    
+    ' Verifica se há curtailment a partir da hora i, carrega o que for possível descarregar e calcula a descarga o mais rápido possível
+    i = 1
+    Call AvaliacaoCargaDescargaEtapa1235(i, aux_espacoParaDescarga, aux_energiaBESS, corteCurtailment, aux_carga, aux_descarga, cargaCurtailment, descargaCurtailment, capacidadeBESS, cRateCarga, cRateDescarga, eficienciaCarga, eficienciaDescarga)
+    
+    ' ==================================================== ETAPA 2: Clipping ====================================================
+    ' === RECOMPOSIÇÃO DE VARIÁVEIS ===
+    For i = 0 To 24: aux_energiaBESS(i) = energiaBESS(i): Next i
+    For i = 1 To 24: aux_espacoParaDescarga(i) = espacoParaDescarga(i): Next i
+    For i = 1 To 24: aux_energiaInjetada(i) = energiaInjetada(i): Next i
+    
+    ' Verifica se há Clipping a partir da hora i, carrega o que for possível descarregar e calcula a descarga o mais rápido possível
+    i = 1
+    Call AvaliacaoCargaDescargaEtapa1235(i, aux_espacoParaDescarga, aux_energiaBESS, sobraClipping, aux_carga, aux_descarga, cargaClipping, descargaClipping, capacidadeBESS, cRateCarga, cRateDescarga, eficienciaCarga, eficienciaDescarga)
+    
+    ' ============================================== ETAPA 3: Falta Concessionária ==============================================
+    ' === RECOMPOSIÇÃO DE VARIÁVEIS ===
+    For i = 0 To 24: aux_energiaBESS(i) = energiaBESS(i): Next i
+    For i = 1 To 24: aux_espacoParaDescarga(i) = espacoParaDescarga(i): Next i
+    For i = 1 To 24: aux_energiaInjetada(i) = energiaInjetada(i): Next i
+    
+    ' Verifica se há Perda por falha da concessionária a partir da hora i, carrega o que for possível descarregar e calcula a descarga o mais rápido possível
+    i = 1
+    Call AvaliacaoCargaDescargaEtapa1235(i, aux_espacoParaDescarga, aux_energiaBESS, perdaConcessionaria, aux_carga, aux_descarga, cargaConcessionaria, descargaConcessionaria, capacidadeBESS, cRateCarga, cRateDescarga, eficienciaCarga, eficienciaDescarga)
+    
+    ' ================================================= ETAPA 4: Arbitragem PLD =================================================
+    ' === RECOMPOSIÇÃO DE VARIÁVEIS ===
+    For i = 0 To 24: aux_energiaBESS(i) = energiaBESS(i): Next i
+    For i = 1 To 24: aux_espacoParaDescarga(i) = espacoParaDescarga(i): Next i
+    For i = 1 To 24: aux_energiaInjetada(i) = energiaInjetada(i): Next i
+    
+    ' Avalia arbitragem de PLD, carrega e descarrega visando maior retorno
+    loopArbitragem = True
+    contadorLoop = 0
+    Do While loopArbitragem
+        If contadorLoop > limitadorLoop Then
+            MsgBox "Alerta: Um loop excedeu o limite de iterações. Pode indicar problema de convergência.", vbExclamation
+            Exit Do
+        End If
+        contadorLoop = contadorLoop + 1
+        loopArbitragem = False
+        Call AvaliacaoArbitragemCargaDescarga(loopArbitragem, aux_espacoParaDescarga, aux_energiaInjetada, aux_energiaBESS, aux_carga, aux_descarga, cargaArbitragem, descargaArbitragem, pldHoraria, pldAlvoTrade, capacidadeBESS, cRateCarga, cRateDescarga, eficienciaCarga, eficienciaDescarga)
+        Call AvaliacaoArbitragemDescargaCarga(loopArbitragem, aux_espacoParaDescarga, aux_energiaInjetada, aux_energiaBESS, aux_carga, aux_descarga, cargaArbitragem, descargaArbitragem, pldHoraria, pldAlvoTrade, capacidadeBESS, cRateCarga, cRateDescarga, eficienciaCarga, eficienciaDescarga)
+    Loop
+    
+    ' ========================================== ETAPA 5: Consolidação etapas 1, 2 e 3 ==========================================
+    ' === RECOMPOSIÇÃO DE VARIÁVEIS ===
+    For i = 0 To 24: aux_energiaBESS(i) = energiaBESS(i): Next i
+    For i = 1 To 24: aux_espacoParaDescarga(i) = espacoParaDescarga(i): Next i
+    For i = 1 To 24: aux_energiaInjetada(i) = energiaInjetada(i): Next i
+
+    ' Verifica as Etapas 1, 2 e 3 em conjunto a partir da hora i, carrega o que for possível descarregar e calcula a descarga o mais rápido possível
+    i = 1
+    Call AvaliacaoCargaDescargaEtapa1235(i, aux_espacoParaDescarga, aux_energiaBESS, possibilidadeCargaSemImpactoInjecao, aux_carga, aux_descarga, aux_cargaSemImpacto, aux_descargaSemImpacto, capacidadeBESS, cRateCarga, cRateDescarga, eficienciaCarga, eficienciaDescarga)
+    
+    ' ==================================== ETAPA 6: Arbitragem PLD pós consolidação 1, 2 e 3 ====================================
+    ' Avalia arbitragem de PLD, carrega e descarrega visando maior retorno após operação sem impacto na injeção de energia
+    loopArbitragem = True
+    contadorLoop = 0
+    Do While loopArbitragem
+        If contadorLoop > limitadorLoop Then
+            MsgBox "Alerta: Um loop excedeu o limite de iterações. Pode indicar problema de convergência.", vbExclamation
+            Exit Do
+        End If
+        contadorLoop = contadorLoop + 1
+        loopArbitragem = False
+        Call AvaliacaoArbitragemCargaDescarga(loopArbitragem, aux_espacoParaDescarga, aux_energiaInjetada, aux_energiaBESS, aux_carga, aux_descarga, aux_cargaComImpacto, aux_descargaComImpacto, pldHoraria, pldAlvoTrade, capacidadeBESS, cRateCarga, cRateDescarga, eficienciaCarga, eficienciaDescarga)
+        Call AvaliacaoArbitragemDescargaCarga(loopArbitragem, aux_espacoParaDescarga, aux_energiaInjetada, aux_energiaBESS, aux_carga, aux_descarga, aux_cargaComImpacto, aux_descargaComImpacto, pldHoraria, pldAlvoTrade, capacidadeBESS, cRateCarga, cRateDescarga, eficienciaCarga, eficienciaDescarga)
+    Loop
+    
+    ' ================================== ETAPA 7.1: Ajusta a descargaSemImpacto para maior PLD ==================================
+    ' Calcula o montante total de descarga sem impacto que foi realizado na Etapa 5
+    aux_carga = 0
+    For i = 1 To 24
+        aux_carga = aux_carga + aux_descargaSemImpacto(i)
+    Next i
+    ' Consolida e aplica cargaSemImpacto, cargaComImpacto e descargaComImpacto além de zerar o vetor descargaSemImpacto
+    For i = 1 To 24
+        cargaSemImpacto(i) = aux_cargaSemImpacto(i)
+        cargaComImpacto(i) = aux_cargaComImpacto(i)
+        descargaComImpacto(i) = aux_descargaComImpacto(i)
+        descargaSemImpacto(i) = 0
+        carga(i) = cargaSemImpacto(i) + cargaComImpacto(i)
+        descarga(i) = descargaSemImpacto(i) + descargaComImpacto(i) + descargaInicial(i)
+        
+        If cargaSemImpacto(i) > 0 Or cargaComImpacto(i) > 0 Then
+            For j = i To 24: energiaBESS(j) = Round(energiaBESS(j) + (cargaSemImpacto(i) + cargaComImpacto(i)), 8): Next j
+            energiaInjetada(i) = Round(energiaInjetada(i) - cargaComImpacto(i) / eficienciaCarga, 8)
+            espacoParaDescarga(i) = Round(espacoParaDescarga(i) + cargaComImpacto(i) / eficienciaCarga, 8)
+        End If
+        If descargaSemImpacto(i) > 0 Or descargaComImpacto(i) > 0 Then
+            For j = i To 24: energiaBESS(j) = Round(energiaBESS(j) - (descargaSemImpacto(i) + descargaComImpacto(i)), 8): Next j
+            energiaInjetada(i) = Round(energiaInjetada(i) + descarga(i) * eficienciaDescarga, 8)
+            espacoParaDescarga(i) = Round(espacoParaDescarga(i) - descarga(i) * eficienciaDescarga, 8)
+        End If
+    Next i
+    
+    ' Marca todas as horas como disponíveis
+    For i = 1 To 24: horasDisponiveis(i) = True: Next i
+    ' Descarrega em ordem de maior PLD, respeitando capacidade
+    contadorLoop = 0
+    Do While aux_carga > 0
+        If contadorLoop > limitadorLoop Then
+            MsgBox "Alerta: Um loop excedeu o limite de iterações. Pode indicar problema de convergência.", vbExclamation
+            Exit Do
+        End If
+        contadorLoop = contadorLoop + 1
+        pld_max = -1
+        j_melhor = 0
+        ' Busca a maior PLD disponível dentre os horários que o BESS possua alguma carga
+        For j = 1 To 24
+            If horasDisponiveis(j) And pldHoraria(j) > pld_max Then
+                pld_max = pldHoraria(j)
+                j_melhor = j
+            End If
+            If energiaBESS(j) > capacidadeBESS Then Exit For
+        Next j
+        If j_melhor = 0 Then Exit Do ' Não há mais horários disponíveis
+        horasDisponiveis(j_melhor) = False ' Marca esse horário como já tentado
+        ' Calcula carga possível
+        aux_descarga = Application.WorksheetFunction.Min(aux_carga, energiaBESS(j_melhor), capacidadeBESS * cRateDescarga, espacoParaDescarga(j_melhor) / eficienciaDescarga)
+        If aux_descarga > 0 Then
+            espacoParaDescarga(j_melhor) = Round(espacoParaDescarga(j_melhor) - aux_descarga * eficienciaDescarga, 8)
+            ' Ajusta a energia acumulada no BESS com a operação realizada
+            For k = j_melhor To 24: energiaBESS(k) = Round(energiaBESS(k) - aux_descarga, 8): Next k
+            descargaSemImpacto(j_melhor) = Round(descargaSemImpacto(j_melhor) + aux_descarga, 8)
+            descarga(j_melhor) = Round(descarga(j_melhor) + aux_descarga, 8)
+            energiaInjetada(j_melhor) = Round(energiaInjetada(j_melhor) + aux_descarga * eficienciaDescarga, 8)
+            ' Reduz carga restante
+            aux_carga = Round(aux_carga - aux_descarga, 8)
+        End If
+    Loop
+    
+    ' =========================================== ETAPA 7.2: FINALIZAÇÃO E RESULTADOS ===========================================
+    Dim somaCorteCurtailment As Double:     somaCorteCurtailment = 0
+    Dim somaSobraClipping As Double:        somaSobraClipping = 0
+    Dim somaPerdaConcessionaria As Double:  somaPerdaConcessionaria = 0
+    Dim somaArbitragem As Double:           somaArbitragem = 0
+    Dim pctCurtailment As Double
+    Dim pctClipping As Double
+    Dim pctConcesisonaria As Double
+    Dim pctArbitragem As Double
+    Dim cargaCurtailmentAjustada(1 To 24) As Double
+    Dim descargaCurtailmentAjustada(1 To 24) As Double
+    Dim cargaClippingAjustada(1 To 24) As Double
+    Dim descargaClippingAjustada(1 To 24) As Double
+    Dim cargaConcessionariaAjustada(1 To 24) As Double
+    Dim descargaConcessionariaAjustada(1 To 24) As Double
+    Dim cargaArbitragemAjustada(1 To 24) As Double
+    Dim descargaArbitragemAjustada(1 To 24) As Double
+    
+    For i = 1 To 24
+        somaCorteCurtailment = somaCorteCurtailment + corteCurtailment(i)
+        somaSobraClipping = somaSobraClipping + sobraClipping(i)
+        somaPerdaConcessionaria = somaPerdaConcessionaria + perdaConcessionaria(i)
+        somaArbitragem = somaArbitragem + cargaArbitragem(i)
+    Next i
+    If (somaCorteCurtailment + somaSobraClipping + somaPerdaConcessionaria) <> 0 Then
+        pctCurtailment = somaCorteCurtailment / (somaCorteCurtailment + somaSobraClipping + somaPerdaConcessionaria)
+        pctClipping = somaSobraClipping / (somaCorteCurtailment + somaSobraClipping + somaPerdaConcessionaria)
+        pctConcesisonaria = somaPerdaConcessionaria / (somaCorteCurtailment + somaSobraClipping + somaPerdaConcessionaria)
+    Else
+        pctCurtailment = 1 / 3
+        pctClipping = 1 / 3
+        pctConcesisonaria = 1 / 3
+    End If
+    pctArbitragem = 1
+    
+    For i = 1 To 24
+        cargaCurtailmentAjustada(i) = cargaSemImpacto(i) * pctCurtailment
+        cargaClippingAjustada(i) = cargaSemImpacto(i) * pctClipping
+        cargaConcessionariaAjustada(i) = cargaSemImpacto(i) * pctConcesisonaria
+        cargaArbitragemAjustada(i) = cargaComImpacto(i) * pctArbitragem
+        descargaCurtailmentAjustada(i) = descargaSemImpacto(i) * pctCurtailment
+        descargaClippingAjustada(i) = descargaSemImpacto(i) * pctClipping
+        descargaConcessionariaAjustada(i) = descargaSemImpacto(i) * pctConcesisonaria
+        descargaArbitragemAjustada(i) = descargaComImpacto(i) * pctArbitragem
+    Next i
+    
+    ReDim partes(0 To 23)
+    For i = 1 To 24
+        carga(i) = cargaSemImpacto(i) + cargaComImpacto(i)
+        descarga(i) = descargaSemImpacto(i) + descargaComImpacto(i) + descargaInicial(i)
+        partes(i - 1) = _
+                        CStr(energiaInjetada(i)) & "\" & _
+                        CStr(energiaBESS(i)) & "\" & _
+                        CStr(cargaCurtailmentAjustada(i)) & "\" & _
+                        CStr(cargaClippingAjustada(i)) & "\" & _
+                        CStr(cargaConcessionariaAjustada(i)) & "\" & _
+                        CStr(cargaArbitragemAjustada(i)) & "\" & _
+                        CStr(carga(i)) & "\" & _
+                        CStr(descargaCurtailmentAjustada(i)) & "\" & _
+                        CStr(descargaClippingAjustada(i)) & "\" & _
+                        CStr(descargaConcessionariaAjustada(i)) & "\" & _
+                        CStr(descargaArbitragemAjustada(i)) & "\" & _
+                        CStr(descarga(i))
+    Next i
+    OperacaoBESS = Join(partes, ";")
+    Exit Function ' Impede que o código vá para TrataErro se não houver erro
+TrataErro:
+    MsgBox "Erro número: " & Err.Number & vbCrLf & _
+           "Descrição: " & Err.Description & vbCrLf & _
+           "Linha possível: " & Erl, vbCritical, "Erro na função OperacaoBESS"
+    OperacaoBESS = "#ERRO"
+    Exit Function
+End Function
+Private Function CDblSafe(valor As String) As Double ' trata os dados de entrada para que vazio ou não numérico seja o mesmo que 0
+    If Trim(valor) = "" Or Not IsNumeric(valor) Then
+        CDblSafe = 0
+    Else
+        CDblSafe = CDbl(valor)
+    End If
+End Function
+Private Function SplitSeguro(texto As String, delimitador As String, tamanhoEsperado As Integer, valorSeVazio As String) As Variant
+    Dim partes() As String
+    Dim i As Integer
+    texto = Trim(texto)
+    If Right(texto, 1) = delimitador Then texto = Left(texto, Len(texto) - 1)
+    partes = Split(texto, delimitador)
+    ReDim Preserve partes(0 To tamanhoEsperado - 1)
+    For i = 0 To UBound(partes)
+        partes(i) = Trim(partes(i))
+        If partes(i) = "" Then partes(i) = valorSeVazio
+    Next i
+    SplitSeguro = partes
+End Function
+Private Function AvaliacaoArbitragemCargaDescarga(ByRef loopArbitragem As Boolean, _
+                                                  ByRef espacoParaDescarga() As Double, _
+                                                  ByRef energiaInjetada() As Double, _
+                                                  ByRef energiaBESS() As Double, _
+                                                  ByRef avaliacaoCarga As Double, _
+                                                  ByRef avaliacaoDescarga As Double, _
+                                                  ByRef vetorCarga() As Double, _
+                                                  ByRef vetorDescarga() As Double, _
+                                                  ByRef pldHoraria() As Double, _
+                                                  ByRef pldAlvoTrade() As Double, _
+                                                  capacidadeBESS As Double, _
+                                                  cRateCarga As Double, _
+                                                  cRateDescarga As Double, _
+                                                  eficienciaCarga As Double, _
+                                                  eficienciaDescarga As Double)
+    Dim i As Integer
+    Dim j, j_melhor As Integer
+    Dim k As Integer
+    Dim h As Integer
+    Dim capacidadeLimite As Double
+    Dim energiaPrevista As Double
+    Dim descargaPrevista As Double
+    Dim horasDisponiveis(1 To 24) As Boolean
+    Dim houveOperacao As Boolean
+    Dim minPLD As Double
+    Dim pld_max As Double
+    
+    ' Marca todas as horas como disponíveis para arbitragem
+    For i = 1 To 24: horasDisponiveis(i) = True: Next i
+    Do While houveOperacao
+        avaliacaoCarga = 0
+        avaliacaoDescarga = 0
+        houveOperacao = False
+        minPLD = 1E+99
+        h = 0
+        ' Encontra a menor PLD entre as horas disponíveis com energia injetada
+        For i = 1 To 24
+            If horasDisponiveis(i) And energiaInjetada(i) > 0 Then
+                If pldHoraria(i) < minPLD Then
+                    minPLD = pldHoraria(i)
+                    h = i
+                    houveOperacao = True
+                End If
+            End If
+        Next i
+        If h = 0 Then Exit Do ' Não há mais horários disponíveis com energia injetada
+        horasDisponiveis(h) = False ' Marca esse horário como já tentado
+        ' Calcula carga possível
+        avaliacaoCarga = Application.WorksheetFunction.Min(energiaInjetada(h) * eficienciaCarga, capacidadeBESS - energiaBESS(h - 1), capacidadeBESS - energiaBESS(h), capacidadeBESS * cRateCarga)
+        ' Verifica o espaço para descarga, em PLDs maiores ou iguais ao PLD alvo, dentro do dia após o horário h, se não, limita a carga ao valor que da para ser descarregado
+        For j = h + 1 To 24
+            If pldHoraria(j) > pldAlvoTrade(h) Then
+                avaliacaoDescarga = avaliacaoDescarga + Round(espacoParaDescarga(j) / eficienciaDescarga, 8)
+            End If
+        Next j
+        If avaliacaoCarga > avaliacaoDescarga Then avaliacaoCarga = avaliacaoDescarga
+        ' Verifica e limita, se a carga levaria o BESS a ultrapassar a capacidade antes da descarga
+        avaliacaoDescarga = 0
+        capacidadeLimite = avaliacaoCarga
+        energiaPrevista = energiaBESS(h - 1)
+        descargaPrevista = 0
+        For j = h + 1 To 24
+            energiaPrevista = energiaBESS(j) + avaliacaoCarga - descargaPrevista
+            ' Checa se chegou na hora j com mais energia que a capacidade do BESS
+            If energiaPrevista > capacidadeBESS Then
+                capacidadeLimite = capacidadeBESS - energiaBESS(j)
+                Exit For
+            End If
+            If pldHoraria(j) >= pldAlvoTrade(h) Then
+                ' Incrementa a descargaPrevista até o final da hora j
+                descargaPrevista = descargaPrevista + espacoParaDescarga(j) / eficienciaDescarga
+            End If
+        Next j
+        If avaliacaoCarga > capacidadeLimite Then avaliacaoCarga = capacidadeLimite
+        If avaliacaoCarga < 0 Then avaliacaoCarga = 0
+        ' Ajusta a energia acumulada no BESS com a operação realizada
+        For j = h To 24: energiaBESS(j) = Round(energiaBESS(j) + avaliacaoCarga, 8): Next j
+        vetorCarga(h) = Round(vetorCarga(h) + avaliacaoCarga, 8)
+        energiaInjetada(h) = Round(energiaInjetada(h) - avaliacaoCarga / eficienciaCarga, 8)
+        If avaliacaoCarga > 0 Then
+            houveOperacao = True
+            loopArbitragem = True
+        End If
+        ' Descarrega em ordem de maior PLD, respeitando PLD alvo e capacidade
+        Do While avaliacaoCarga > 0
+            pld_max = -1
+            j_melhor = 0
+            ' Busca o melhor horário disponível antes do fim do dia ou que o BESS supere a sua capacidade
+            For j = h + 1 To 24
+                If pldHoraria(j) > pldAlvoTrade(h) And espacoParaDescarga(j) > 0 And energiaBESS(j) > 0 Then
+                    If pldHoraria(j) > pld_max Then
+                        pld_max = pldHoraria(j)
+                        j_melhor = j
+                    End If
+                End If
+                If energiaBESS(j) > capacidadeBESS Then Exit For
+            Next j
+            If j_melhor = 0 Then Exit Do ' Não há mais horários disponíveis
+            avaliacaoDescarga = Application.WorksheetFunction.Min(avaliacaoCarga, energiaBESS(j_melhor), capacidadeBESS * cRateDescarga, espacoParaDescarga(j_melhor) / eficienciaDescarga)
+            espacoParaDescarga(j_melhor) = Round(espacoParaDescarga(j_melhor) - avaliacaoDescarga * eficienciaDescarga, 8)
+            ' Ajusta a energia acumulada no BESS com a operação realizada
+            For k = j_melhor To 24: energiaBESS(k) = Round(energiaBESS(k) - avaliacaoDescarga, 8): Next k
+            vetorDescarga(j_melhor) = Round(vetorDescarga(j_melhor) + avaliacaoDescarga, 8)
+            ' Reduz carga restante
+            avaliacaoCarga = Round(avaliacaoCarga - avaliacaoDescarga, 8)
+        Loop
+    Loop
+End Function
+Private Function AvaliacaoArbitragemDescargaCarga(ByRef loopArbitragem As Boolean, _
+                                                  ByRef espacoParaDescarga() As Double, _
+                                                  ByRef energiaInjetada() As Double, _
+                                                  ByRef energiaBESS() As Double, _
+                                                  ByRef avaliacaoCarga As Double, _
+                                                  ByRef avaliacaoDescarga As Double, _
+                                                  ByRef vetorCarga() As Double, _
+                                                  ByRef vetorDescarga() As Double, _
+                                                  ByRef pldHoraria() As Double, _
+                                                  ByRef pldAlvoTrade() As Double, _
+                                                  capacidadeBESS As Double, _
+                                                  cRateCarga As Double, _
+                                                  cRateDescarga As Double, _
+                                                  eficienciaCarga As Double, _
+                                                  eficienciaDescarga As Double)
+    Dim i As Integer
+    Dim j, j_melhor As Integer
+    Dim k As Integer
+    Dim h As Integer
+    Dim capacidadeLimite As Double
+    Dim energiaPrevista As Double
+    Dim cargaPrevista As Double
+    Dim horasDisponiveis(1 To 24) As Boolean
+    Dim houveOperacao As Boolean
+    Dim minPLD As Double
+    Dim pld_max As Double
+    
+    ' Marca todas as horas como disponíveis para arbitragem
+    For i = 1 To 24: horasDisponiveis(i) = True: Next i
+    Do While houveOperacao
+        avaliacaoCarga = 0
+        avaliacaoDescarga = 0
+        houveOperacao = False
+        pld_max = -1
+        h = 0
+        ' Encontra o maior PLD entre as horas disponíveis com energiaBESS e espaço para descarregar
+        For i = 1 To 24
+            If horasDisponiveis(i) And energiaBESS(i) > 0 And espacoParaDescarga(i) > 0 Then
+                If pldHoraria(i) > pld_max Then
+                    pld_max = pldHoraria(i)
+                    h = i
+                    houveOperacao = True
+                End If
+            End If
+        Next i
+        If h = 0 Then Exit Do ' Não há mais horários disponíveis com energia no BESS e espaço para descarga
+        horasDisponiveis(h) = False ' Marca esse horário como já tentado
+        ' Calcula descarga possível
+        avaliacaoDescarga = Application.WorksheetFunction.Min(energiaBESS(h), capacidadeBESS * cRateDescarga, espacoParaDescarga(h) / eficienciaDescarga)
+    ' Verifica o espaço para carga, em PLDs menores comparando a PLD alvo daquele horário com a PLD do horário h. A carga acontece dentro do dia, após o horário h, se não, limita a carga ao valor que da para ser carregado
+        For j = h + 1 To 24
+            If pldAlvoTrade(j) < pldHoraria(h) Then
+                avaliacaoCarga = avaliacaoCarga + Round(energiaInjetada(j) * eficienciaCarga, 8)
+            End If
+        Next j
+        If avaliacaoDarga > avaliacaoCarga Then avaliacaoDescarga = avaliacaoCarga
+        ' Verifica e limita, se a descarga levaria o BESS a ficar com energia negativa antes da carga
+        avaliacaoCarga = 0
+        capacidadeLimite = avaliacaoDescarga
+        energiaPrevista = energiaBESS(h - 1)
+        cargaPrevista = 0
+        For j = h + 1 To 24
+            energiaPrevista = energiaBESS(j) - avaliacaoDescarga + cargaPrevista
+            ' Checa se chegou na hora j com energia no BESS menor que 0
+            If energiaPrevista < 0 Then
+                capacidadeLimite = energiaBESS(j)
+                Exit For
+            End If
+            If pldAlvoTrade(j) < pldHoraria(h) Then
+                ' Incrementa a cargaPrevista até o final da hora j
+                cargaPrevista = cargaPrevista + energiaInjetada(j) * eficienciaCarga
+            End If
+        Next j
+        If avaliacaoDescarga > capacidadeLimite Then avaliacaoDescarga = capacidadeLimite
+        If avaliacaoDescarga < 0 Then avaliacaoDescarga = 0
+        ' Ajusta a energia acumulada no BESS com a operação realizada
+        For j = h To 24: energiaBESS(j) = Round(energiaBESS(j) - avaliacaoDescarga, 8): Next j
+        vetorDescarga(h) = Round(vetorDescarga(h) + avaliacaoDescarga, 8)
+        espacoParaDescarga(h) = Round(espacoParaDescarga(h) - avaliacaoDescarga * eficienciaDescarga, 8)
+        If avaliacaoDescarga > 0 Then
+            houveOperacao = True
+            loopArbitragem = True
+        End If
+        ' Carrega em ordem de menor PLD, respeitando PLD alvo e capacidade
+        Do While avaliacaoDescarga > 0
+            minPLD = 1E+99
+            j_melhor = 0
+            ' Busca o melhor horário disponível antes do fim do dia ou que o BESS fique com energia menor que 0
+            For j = h + 1 To 24
+                If pldAlvoTrade(j) < pldHoraria(h) And energiaInjetada(j) > 0 Then
+                    If pldHoraria(j) < minPLD Then
+                        minPLD = pldHoraria(j)
+                        j_melhor = j
+                    End If
+                End If
+                If energiaBESS(j) < 0 Then Exit For
+            Next j
+            If j_melhor = 0 Then Exit Do ' Não há mais horários disponíveis
+            avaliacaoCarga = Application.WorksheetFunction.Min(avaliacaoDescarga, energiaInjetada(j_melhor) * eficienciaCarga, capacidadeBESS - energiaBESS(j_melhor - 1), capacidadeBESS - energiaBESS(j_melhor), capacidadeBESS * cRateCarga)
+            energiaInjetada(j_melhor) = Round(energiaInjetada(j_melhor) - avaliacaoCarga / eficienciaCarga, 8)
+            ' Ajusta a energia acumulada no BESS com a operação realizada
+            For k = j_melhor To 24: energiaBESS(k) = Round(energiaBESS(k) + avaliacaoCarga, 8): Next k
+            vetorCarga(j_melhor) = Round(vetorCarga(j_melhor) + avaliacaoCarga, 8)
+            ' Reduz descarga restante
+            avaliacaoDescarga = Round(avaliacaoDescarga - avaliacaoCarga, 8)
+        Loop
+    Loop
+End Function
+Private Function AvaliacaoCargaDescargaEtapa1235(ByRef hora_inicial As Integer, _
+                       ByRef espacoParaDescarga() As Double, _
+                       ByRef energiaBESS() As Double, _
+                       ByRef energiaDisponivelParaCarga() As Double, _
+                       ByRef avaliacaoCarga As Double, _
+                       ByRef avaliacaoDescarga As Double, _
+                       ByRef vetorCarga() As Double, _
+                       ByRef vetorDescarga() As Double, _
+                       capacidadeBESS As Double, _
+                       cRateCarga As Double, _
+                       cRateDescarga As Double, _
+                       eficienciaCarga As Double, _
+                       eficienciaDescarga As Double)
+    Dim h As Integer
+    Dim hora As Integer
+    Dim j As Integer
+    Dim capacidadeLimite As Double
+    Dim energiaPrevista As Double
+    Dim descargaPrevista As Double
+    
+    For h = hora_inicial To 24
+        hora = 25 - h ' Carga mais tarde possível
+        'hora = h ' Carga mais cedo possível
+        avaliacaoCarga = 0
+        avaliacaoDescarga = 0
+        ' Verifica se há energia e espaço disponível no BESS
+        If energiaDisponivelParaCarga(hora) > 0 Then
+            ' Verifica se avaliacaoCarga cabe para carregamento e executa o que é possível de ser carregado
+            avaliacaoCarga = Application.WorksheetFunction.Min(energiaDisponivelParaCarga(hora) * eficienciaCarga, capacidadeBESS - energiaBESS(hora - 1), capacidadeBESS - energiaBESS(hora), capacidadeBESS * cRateCarga)
+            ' Verifica o espaço para descarga dentro do dia após o horário i, se não, limita a carga ao valor que da para ser descarregado
+            For j = hora + 1 To 24: avaliacaoDescarga = avaliacaoDescarga + Round(espacoParaDescarga(j) / eficienciaDescarga, 8): Next j
+            If avaliacaoCarga > avaliacaoDescarga Then avaliacaoCarga = avaliacaoDescarga
+            ' Verifica e limita, se a carga levaria o BESS a ultrapassar a capacidade antes da descarga
+            avaliacaoDescarga = 0
+            capacidadeLimite = avaliacaoCarga
+            energiaPrevista = energiaBESS(hora - 1)
+            descargaPrevista = 0
+            For j = hora + 1 To 24
+                energiaPrevista = energiaBESS(j) + avaliacaoCarga - descargaPrevista
+                ' Checa se chegou na hora j com mais energia que a capacidade do BESS
+                If energiaPrevista > capacidadeBESS Then
+                    capacidadeLimite = Application.WorksheetFunction.Min(capacidadeLimite, capacidadeBESS - energiaBESS(j))
+                End If
+                descargaPrevista = descargaPrevista + espacoParaDescarga(j) / eficienciaDescarga
+            Next j
+            If avaliacaoCarga > capacidadeLimite Then avaliacaoCarga = capacidadeLimite
+            If avaliacaoCarga < 0 Then avaliacaoCarga = 0
+            ' Ajusta a energia acumulada no BESS com a operação realizada
+            For j = hora To 24: energiaBESS(j) = Round(energiaBESS(j) + avaliacaoCarga, 8): Next j
+            vetorCarga(hora) = Round(vetorCarga(hora) + avaliacaoCarga, 8)
+            ' Descarrega o valor de aux_carga o mais cedo possível
+            Call DescargaMaisRapidaPossivel(hora + 1, espacoParaDescarga, energiaBESS, avaliacaoCarga, avaliacaoDescarga, vetorDescarga, capacidadeBESS, cRateDescarga, eficienciaDescarga)
+        End If
+    Next h
+End Function
+Private Function DescargaMaisRapidaPossivel(ByRef hora_inicial As Integer, _
+                                            ByRef espacoParaDescarga() As Double, _
+                                            ByRef energiaBESS() As Double, _
+                                            ByRef avaliacaoCarga As Double, _
+                                            ByRef avaliacaoDescarga As Double, _
+                                            ByRef vetorDescarga() As Double, _
+                                            capacidadeBESS As Double, _
+                                            cRateDescarga As Double, _
+                                            eficienciaDescarga As Double)
+    Dim j As Integer
+    Dim k As Integer
+    For j = hora_inicial To 24
+        If espacoParaDescarga(j) > 0 And energiaBESS(j) > 0 And avaliacaoCarga > 0 Then
+            avaliacaoDescarga = Application.WorksheetFunction.Min(energiaBESS(j), capacidadeBESS * cRateDescarga, espacoParaDescarga(j) / eficienciaDescarga)
+            espacoParaDescarga(j) = Round(espacoParaDescarga(j) - avaliacaoDescarga * eficienciaDescarga, 8)
+            ' Ajusta a energia acumulada no BESS com a operação realizada
+            For k = j To 24: energiaBESS(k) = Round(energiaBESS(k) - avaliacaoDescarga, 8): Next k
+            vetorDescarga(j) = Round(vetorDescarga(j) + avaliacaoDescarga, 8)
+        End If
+    Next j
+End Function
